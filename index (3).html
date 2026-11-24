@@ -1,0 +1,1444 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PRESIDENT · 프레지던트</title>
+<!--
+  =====================================================================
+   PRESIDENT (프레지던트) — 단일 HTML 파일 / 외부 라이브러리 없음
+   - 초록 펠트 카지노 테마
+   - 규칙: 8기리, 혁명, ♠3 반격, 탄핵(직전 프레지던트가 1등을 놓치면 즉시 거지), 카드 교환, N판 승부
+   - 친구 초대: 서버 없는 WebRTC P2P (초대 링크 → 참가 코드 → 연결)
+
+   ■ 구조
+     1. RULES / NET / SEATS : 규칙·네트워크·캐릭터 설정 (여기만 고쳐도 됨)
+     2. 카드 데이터 / 조합 판정
+     3. 게임 엔진 (방장 기기에서만 동작)
+        - 방장이 모든 판정을 하고, 각 자리에 "그 자리에서 보이는 화면 정보(view)"를 보냄
+        - 참가자는 view를 받아 그리기만 하고, 행동(내기/패스/교환)을 방장에게 보냄
+     4. AI (난이도별)
+     5. 화면 그리기 (view → DOM)
+     6. 입력 처리
+     7. 네트워크 (초대 링크 / 참가 코드)
+     8. 로비 / 시작
+
+   ■ 친구 초대 방법
+     방장: 로비에서 자리를 '친구 초대'로 바꾸기 → '초대 링크 보내기'
+     친구: 링크 열기 → 이름 입력 → '참가 코드 만들기' → 코드를 방장에게 보내기
+     방장: 받은 코드를 붙여넣고 '연결' → 모두 모이면 게임 시작
+     ※ 이 파일을 홈페이지(https)에 올린 주소로 열어야 친구가 링크로 들어올 수 있어요.
+     ※ 일부 회사·학교·모바일 통신망에서는 P2P가 막힐 수 있어요. 그럴 땐 NET.ICE_SERVERS에 TURN 서버를 추가하세요.
+  =====================================================================
+-->
+<style>
+  /* ---------- 팔레트 ---------- */
+  :root{
+    --felt:#0f4a3c; --felt-dark:#0a3329; --felt-deep:#06231c;
+    --gold:#d9a441; --gold-hi:#f0c871; --cream:#f6f1e6; --ink:#161513;
+    --red:#b8141f; --burgundy:#4a0f16;
+    --chip-amber:#c8902e; --chip-black:#1d1d1d; --chip-red:#a3192a; --chip-green:#1f7a4d;
+    --serif:'Cormorant Garamond','Playfair Display','Nanum Myeongjo','AppleMyungjo','Batang',Georgia,serif;
+    --sans:'Pretendard','Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',system-ui,sans-serif;
+    --cw:clamp(42px, 12vw, 74px); --ch:calc(var(--cw) * 1.42);
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none !important}
+  html,body{margin:0;height:100%}
+  body{
+    color:var(--cream); font-family:var(--sans); overflow:hidden;
+    -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none;
+    background:radial-gradient(ellipse at 28% 18%, #1c6e57 0%, var(--felt) 42%, var(--felt-dark) 72%, var(--felt-deep) 100%);
+    background-color:var(--felt-deep);
+  }
+  /* 펠트 질감 (SVG 노이즈) */
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.35;mix-blend-mode:overlay;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+  /* 창문 블라인드로 들어오는 사선 빛과 그림자 */
+  body::after{content:"";position:fixed;inset:-10%;pointer-events:none;z-index:0;filter:blur(14px);
+    background:
+      linear-gradient(118deg, transparent 0 22%, rgba(255,226,160,.10) 22% 30%, transparent 30% 44%,
+        rgba(255,226,160,.08) 44% 50%, transparent 50% 66%, rgba(255,226,160,.07) 66% 71%, transparent 71%),
+      repeating-linear-gradient(118deg, rgba(0,0,0,0) 0 70px, rgba(0,0,0,.22) 70px 120px);}
+  button,input,select,textarea{font:inherit;touch-action:manipulation}
+  input,textarea{user-select:text;-webkit-user-select:text}
+
+  #app{position:relative;z-index:1;display:flex;flex-direction:column;height:100vh;height:100dvh;max-width:1100px;margin:0 auto}
+
+  /* ---------- 헤더 ---------- */
+  header{display:flex;align-items:center;gap:10px;padding:8px 12px 4px}
+  .logo{font-family:var(--serif);font-weight:700;letter-spacing:.18em;font-size:clamp(17px,4.6vw,26px);color:var(--gold-hi);
+    text-shadow:0 1px 0 #5a3d0c,0 0 18px rgba(240,200,113,.25);white-space:nowrap}
+  .logo small{font-family:var(--sans);font-weight:500;letter-spacing:.05em;font-size:.45em;color:var(--cream);opacity:.65;margin-left:6px}
+  #roundNo{font-family:var(--serif);font-size:13px;color:var(--gold);border:1px solid rgba(217,164,65,.5);border-radius:999px;padding:1px 10px;white-space:nowrap}
+  #roundNo:empty{display:none}
+  .spacer{flex:1}
+  #revBadge{display:none;font-size:11.5px;letter-spacing:.12em;padding:3px 10px;border-radius:999px;white-space:nowrap;
+    background:var(--red);color:var(--cream);box-shadow:0 0 14px rgba(184,20,31,.6)}
+  body.revolution #revBadge{display:inline-block}
+  .iconBtn{width:34px;height:34px;flex:none;border-radius:50%;border:1px solid var(--gold);background:rgba(6,35,28,.6);
+    color:var(--gold-hi);font-family:var(--serif);font-weight:700;font-size:17px;cursor:pointer}
+
+  /* ---------- 판 레이아웃 ---------- */
+  #board{flex:1;min-height:0;display:grid;gap:8px;padding:0 10px;
+    grid-template-columns:repeat(3,1fr);grid-template-rows:auto 1fr;grid-template-areas:"s1 s2 s3" "tb tb tb"}
+  #seat1{grid-area:s1} #seat2{grid-area:s2} #seat3{grid-area:s3} #table{grid-area:tb}
+  @media (min-width:820px) and (min-height:560px){
+    #board{grid-template-columns:200px 1fr 200px;grid-template-areas:". s2 ." "s1 tb s3"}
+    #seat1,#seat3{align-self:center}
+    #seat2{justify-self:center;min-width:210px}
+  }
+
+  /* ---------- 상대 자리 ---------- */
+  .seat{position:relative;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 6px 12px;
+    border-radius:14px;background:rgba(4,22,17,.55);border:1px solid rgba(217,164,65,.25);
+    -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);box-shadow:0 8px 20px rgba(0,0,0,.35);
+    transition:border-color .25s,box-shadow .25s,opacity .3s}
+  .seat.active{border-color:var(--gold-hi);box-shadow:0 0 0 1px var(--gold-hi),0 0 22px rgba(240,200,113,.35)}
+  .seat.out{opacity:.5}
+  .name{font-size:13px;font-weight:700;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .sub{font-size:10.5px;opacity:.6;white-space:nowrap}
+  .sub:empty{display:none}
+  .rankTag{font-family:var(--serif);font-weight:700;font-size:11px;letter-spacing:.08em;padding:1px 8px;border-radius:999px;white-space:nowrap;
+    color:var(--ink);background:var(--rank-c,#ccc)}
+  .rankTag:empty{display:none}
+  .backs{display:flex;height:22px;padding-left:9px;margin-top:1px}
+  .mini{width:14px;height:20px;margin-left:-9px;border-radius:2px;border:1.5px solid var(--cream);
+    background:#7a1c22 repeating-linear-gradient(45deg,rgba(255,255,255,.16) 0 1.5px,transparent 1.5px 4px)}
+  .count{font-size:12px;opacity:.85}
+  .count b{font-family:var(--serif);font-size:16px;color:var(--gold-hi)}
+  .bubble{position:absolute;left:50%;bottom:-12px;transform:translateX(-50%);z-index:6;background:var(--cream);color:var(--ink);
+    font-size:12px;font-weight:700;padding:2px 10px;border-radius:999px;white-space:nowrap;box-shadow:0 3px 8px rgba(0,0,0,.45)}
+  .bubble:empty{display:none}
+
+  /* 칩 모양 아바타 */
+  .chip{--c:var(--chip-black);width:42px;height:42px;flex:none;border-radius:50%;display:grid;place-items:center;
+    font-family:var(--serif);font-weight:700;font-size:17px;color:var(--cream);
+    background:
+      radial-gradient(circle, var(--c) 0 52%, rgba(246,241,230,.9) 53% 56%, var(--c) 57% 66%, transparent 67%),
+      repeating-conic-gradient(var(--c) 0 22.5deg, var(--cream) 22.5deg 45deg);
+    box-shadow:0 3px 6px rgba(0,0,0,.55),inset 0 0 0 2px rgba(0,0,0,.25)}
+  .seat.active .chip{animation:spin 2.4s linear infinite}
+  .seat.active .chip > i{display:inline-block;animation:spin 2.4s linear infinite reverse}
+  .chip > i{font-style:normal}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ---------- 테이블 ---------- */
+  #table{position:relative;min-height:0;margin-top:8px;padding:10px 8px;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:6px;overflow:hidden;border-radius:120px / 80px;
+    background:radial-gradient(ellipse at center, rgba(255,255,255,.04), rgba(0,0,0,.18) 70%);
+    box-shadow:inset 0 0 0 2px rgba(217,164,65,.28),inset 0 0 50px rgba(0,0,0,.35);transition:background .6s}
+  #table::before{content:"";position:absolute;inset:12px;border-radius:110px / 70px;border:1px dashed rgba(217,164,65,.22);pointer-events:none}
+  body.revolution #table{background:radial-gradient(ellipse at center, rgba(184,20,31,.35), rgba(74,15,22,.6) 75%)}
+  #table::after{content:"REVOLUTION";position:absolute;bottom:9%;left:0;right:0;text-align:center;font-family:var(--serif);
+    font-weight:700;letter-spacing:.3em;font-size:clamp(18px,6vw,44px);color:var(--gold-hi);opacity:0;transition:opacity .5s;pointer-events:none}
+  body.revolution #table::after{opacity:.18}
+  /* 장식용 칩 더미 */
+  .stack{position:absolute;width:34px;height:34px;pointer-events:none;opacity:.85}
+  .stack .chip{position:absolute;width:34px;height:34px;font-size:0;left:0}
+  .stack.a{left:6%;top:14%} .stack.b{right:7%;bottom:12%}
+  #turnInfo{font-family:var(--serif);font-weight:700;letter-spacing:.14em;font-size:14px;color:var(--gold-hi);z-index:2;text-align:center;
+    padding:2px 14px;border-top:1px solid rgba(217,164,65,.45);border-bottom:1px solid rgba(217,164,65,.45)}
+  #turnInfo.mine{font-size:18px;color:var(--cream);text-shadow:0 0 14px rgba(240,200,113,.8);animation:glow 1.2s infinite alternate}
+  @keyframes glow{from{opacity:.8}to{opacity:1}}
+  #field{--cw:clamp(48px,13vw,84px);--ch:calc(var(--cw) * 1.42);display:flex;justify-content:center;align-items:center;min-height:calc(var(--ch) + 8px);z-index:1}
+  #field .card + .card{margin-left:calc(var(--cw) * -0.3)}
+  #field .card{animation:toss .32s cubic-bezier(.2,.9,.3,1.2)}
+  @keyframes toss{from{transform:translateY(-36px) rotate(-14deg) scale(1.1);opacity:0}}
+  .emptyField{text-align:center;font-size:12.5px;opacity:.7;line-height:1.6}
+  .emptyField b{display:block;font-family:var(--serif);font-size:22px;letter-spacing:.2em;color:var(--gold)}
+  #fieldOwner{font-size:12px;opacity:.85;min-height:16px;z-index:1}
+  #log{font-size:11.5px;opacity:.7;text-align:center;line-height:1.4;min-height:32px;z-index:1;max-width:92%}
+
+  /* ---------- 카드 ---------- */
+  .card{width:var(--cw);height:var(--ch);flex:none;position:relative;border-radius:calc(var(--cw) * .09);
+    background:linear-gradient(155deg,#fffdf8 0%,#f3ede0 100%);border:1px solid rgba(0,0,0,.18);
+    box-shadow:0 1px 0 rgba(255,255,255,.6) inset,2px 5px 10px rgba(0,0,0,.45);
+    transition:transform .15s,box-shadow .15s,filter .2s;font-family:var(--serif)}
+  .card.red{color:var(--red)} .card.black{color:var(--ink)}
+  .card .corner{position:absolute;top:4px;left:5px;display:flex;flex-direction:column;align-items:center;line-height:.95}
+  .card .corner b{font-size:calc(var(--cw) * .36);font-weight:700}
+  .card .corner i{font-style:normal;font-size:calc(var(--cw) * .27)}
+  .card .pip{position:absolute;right:9%;bottom:6%;font-size:calc(var(--cw) * .56);line-height:1}
+  .card.face .pip{right:20%;bottom:16%;font-size:calc(var(--cw) * .5);font-weight:700;font-style:italic;opacity:.85}
+  .card.face::after{content:"";position:absolute;inset:18% 10% 8% 36%;border:1px solid currentColor;border-radius:4px;opacity:.25}
+  .card.joker{color:var(--ink)}
+  .card.joker .corner b{font-size:calc(var(--cw) * .22);letter-spacing:.05em;writing-mode:vertical-rl;text-orientation:upright}
+  .card.joker .pip{color:var(--gold);font-size:calc(var(--cw) * .6);text-shadow:0 1px 0 #6b4a10}
+
+  /* ---------- 내 영역 ---------- */
+  #mine{padding:2px 10px calc(8px + env(safe-area-inset-bottom))}
+  #meBar{display:flex;align-items:center;gap:8px;font-size:13px;padding:8px 2px 0}
+  #meBar .chip{width:30px;height:30px;font-size:13px}
+  #myName{font-weight:700}
+  #myBubble{position:static;transform:none}
+  #hint{flex:1;text-align:right;font-size:12px;opacity:.85}
+  #hand{display:flex;justify-content:center;align-items:flex-end;padding:22px 4px 6px;min-height:calc(var(--ch) + 30px)}
+  #hand .card{cursor:pointer}
+  #hand .card.sel{transform:translateY(-18px);box-shadow:0 0 0 2px var(--gold-hi),0 12px 18px rgba(0,0,0,.55)}
+  #hand .card.dim{filter:brightness(.55) saturate(.7)}
+  #hand .card.new{box-shadow:0 0 0 2px #8fe0c3,0 0 14px rgba(143,224,195,.8)}
+  .outMsg{font-family:var(--serif);font-size:17px;letter-spacing:.06em;color:var(--gold-hi);align-self:center}
+  #controls{display:flex;gap:12px;justify-content:center}
+  .btn{font-weight:700;font-size:16px;padding:11px 22px;min-width:118px;cursor:pointer;border-radius:12px;color:#2a1c05;
+    background:linear-gradient(180deg,var(--gold-hi),var(--gold) 55%,#a87522);border:1px solid #6b4a10;
+    box-shadow:0 1px 0 rgba(255,255,255,.5) inset,0 4px 10px rgba(0,0,0,.45);transition:transform .08s,filter .15s}
+  .btn.alt{color:var(--cream);background:rgba(4,22,17,.75);border:1px solid var(--gold)}
+  .btn.small{font-size:13.5px;padding:7px 14px;min-width:0}
+  .btn:active:not(:disabled){transform:translateY(2px)}
+  .btn:disabled{opacity:.35;cursor:not-allowed;filter:grayscale(.6)}
+
+  /* ---------- 오버레이 ---------- */
+  .overlay{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;padding:14px;
+    background:rgba(2,12,9,.72);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+  .overlay.show{display:flex}
+  .panel{position:relative;width:100%;max-width:480px;max-height:94vh;max-height:94dvh;overflow:auto;padding:20px 20px 18px;
+    background:linear-gradient(160deg,#103f33,#0a2b23 60%,#071e18);color:var(--cream);
+    border:1px solid rgba(217,164,65,.55);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.6),inset 0 0 0 4px rgba(0,0,0,.15)}
+  .panel h2{margin:0 0 .2em;text-align:center;font-family:var(--serif);font-weight:700;letter-spacing:.16em;color:var(--gold-hi);font-size:26px}
+  .panel h3{margin:1em 0 .4em;font-family:var(--serif);letter-spacing:.12em;font-size:15px;color:var(--gold)}
+  .panel p,.panel li{font-size:14px;line-height:1.65}
+  .panel ul{padding-left:1.2em;margin:.3em 0}
+  .panel li b{color:var(--gold-hi)}
+  .tagline{text-align:center;font-family:var(--serif);font-style:italic;font-size:15px;color:var(--cream);opacity:.75;margin:0 0 12px}
+  .panel .btn{display:block;margin:14px auto 2px}
+  .panel label{display:block;font-size:12.5px;font-weight:700;color:var(--gold);letter-spacing:.04em}
+  .panel input[type=text],.panel select,.panel textarea{width:100%;margin-top:4px;padding:8px 10px;border-radius:10px;
+    border:1px solid rgba(217,164,65,.5);background:rgba(0,0,0,.28);color:var(--cream);font-size:15px}
+  .panel select option{color:#111}
+  .panel textarea{height:60px;resize:none;font-family:monospace;font-size:11px;word-break:break-all}
+  .formRow{display:flex;gap:10px;margin:10px 0}
+  .formRow > *{flex:1}
+  .diffDesc{font-size:12px;opacity:.7;min-height:1.4em;margin:-4px 0 6px}
+  .seatRow{border:1px solid rgba(217,164,65,.28);border-radius:12px;padding:8px 10px;margin:8px 0;background:rgba(0,0,0,.18)}
+  .seatHead{display:flex;align-items:center;gap:9px}
+  .seatHead .chip{width:32px;height:32px;font-size:13px}
+  .seatHead b{flex:1;font-size:14px}
+  .seg{display:flex;border:1px solid var(--gold);border-radius:999px;overflow:hidden;flex:none}
+  .seg button{border:0;background:transparent;color:var(--gold-hi);padding:5px 11px;font-size:12.5px;font-weight:700;cursor:pointer}
+  .seg button.on{background:var(--gold);color:#2a1c05}
+  .invite{margin-top:6px}
+  .invite .rowBtns{display:flex;gap:6px;margin:6px 0}
+  .invite .rowBtns .btn{margin:0;flex:1}
+  .status{font-size:13px;text-align:center;opacity:.85;min-height:1.4em;margin:.4em 0}
+  .status.ok{color:#8fe0c3;opacity:1;font-weight:700}
+  .status.err{color:#ff8a8f;opacity:1;font-weight:700}
+  .note{font-size:12px;opacity:.7;line-height:1.5}
+  details{margin-top:8px} summary{cursor:pointer;font-weight:700;font-size:13.5px;color:var(--gold)}
+
+  .resultRow{display:flex;align-items:center;gap:10px;padding:8px 12px;margin:6px 0;border-radius:10px;background:rgba(0,0,0,.25);font-size:14px}
+  .resultRow:first-child{background:linear-gradient(90deg,rgba(217,164,65,.45),rgba(217,164,65,.1))}
+  .resultRow.me{box-shadow:inset 0 0 0 1px var(--gold-hi)}
+  .resultRow .chip{width:28px;height:28px;font-size:12px}
+  .resultRow .pl{font-family:var(--serif);font-weight:700;letter-spacing:.06em;min-width:86px;color:var(--gold-hi)}
+  .resultRow .pts{margin-left:auto;font-family:var(--serif);font-weight:700;color:var(--gold-hi)}
+  table.score{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.score th{font-family:var(--serif);letter-spacing:.08em;color:var(--gold);font-weight:700;padding:5px 4px;border-bottom:1px solid rgba(217,164,65,.5)}
+  table.score td{padding:6px 4px;border-bottom:1px solid rgba(255,255,255,.08);text-align:center}
+  .champ{text-align:center;margin:4px 0 10px}
+  .champ .chip{width:64px;height:64px;font-size:26px;margin:0 auto 6px}
+  .champ b{display:block;font-family:var(--serif);font-size:22px;letter-spacing:.08em;color:var(--gold-hi)}
+  .champ small{opacity:.75}
+
+  /* ---------- 연출 ---------- */
+  #flash{position:fixed;inset:0;z-index:40;pointer-events:none;display:grid;place-items:center}
+  .flashText{font-family:var(--serif);font-weight:700;letter-spacing:.3em;font-size:clamp(26px,8vw,56px);color:var(--gold-hi);
+    padding:8px 26px;border-top:1px solid var(--gold);border-bottom:1px solid var(--gold);background:rgba(2,12,9,.55);
+    text-shadow:0 0 20px rgba(240,200,113,.6);animation:fade 1.3s forwards}
+  @keyframes fade{0%{opacity:0;letter-spacing:.6em}20%{opacity:1;letter-spacing:.3em}75%{opacity:1}100%{opacity:0}}
+  /* 컷인: 영화 같은 레터박스 + 스포트라이트 */
+  #cutin{position:fixed;inset:0;z-index:42;pointer-events:none}
+  .cut{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;animation:cutIn 1.3s ease forwards;
+    background:radial-gradient(ellipse 60% 40% at 50% 50%, rgba(255,226,160,.18), rgba(0,0,0,.72) 70%)}
+  .cut::before,.cut::after{content:"";position:absolute;left:0;right:0;height:16vh;background:#000;animation:bars 1.3s ease forwards}
+  .cut::before{top:0} .cut::after{bottom:0}
+  .cut.rev{background:radial-gradient(ellipse 60% 40% at 50% 50%, rgba(184,20,31,.35), rgba(0,0,0,.78) 70%)}
+  @keyframes cutIn{0%{opacity:0}12%,82%{opacity:1}100%{opacity:0}}
+  @keyframes bars{0%{transform:scaleY(0)}15%,85%{transform:scaleY(1)}100%{transform:scaleY(0)}}
+  .cutBody{display:flex;align-items:center;gap:clamp(12px,4vw,26px);padding:0 6vw;animation:slide 1.3s cubic-bezier(.2,.9,.2,1) forwards}
+  @keyframes slide{0%{transform:translateX(40px);opacity:0}15%{transform:none;opacity:1}85%{opacity:1}100%{transform:translateX(-20px);opacity:0}}
+  .cutBody .chip{width:clamp(68px,18vw,110px);height:clamp(68px,18vw,110px);font-size:clamp(28px,7vw,44px)}
+  .cutTitle{font-family:var(--serif);font-weight:700;letter-spacing:.14em;font-size:clamp(30px,9vw,60px);line-height:1;color:var(--gold-hi);
+    text-shadow:0 0 24px rgba(240,200,113,.55)}
+  .cut.rev .cutTitle{color:#ffd1d4;text-shadow:0 0 24px rgba(255,60,70,.6)}
+  .cutLine{font-family:var(--serif);font-style:italic;font-size:clamp(15px,4vw,22px);margin-top:8px}
+  .cutName{font-size:12px;letter-spacing:.1em;opacity:.7;margin-top:4px}
+  #toast{position:fixed;left:50%;bottom:calc(var(--ch) + 124px);transform:translateX(-50%);z-index:60;background:rgba(246,241,230,.97);
+    color:var(--ink);border-radius:12px;border:1px solid var(--gold);padding:9px 16px;font-size:13.5px;line-height:1.5;max-width:92vw;
+    text-align:center;box-shadow:0 8px 22px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .25s}
+  #toast.show{opacity:1}
+
+  @media (max-height:640px){
+    .chip{width:34px;height:34px;font-size:14px}
+    .backs{display:none} #log{min-height:16px} .stack{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="logo">PRESIDENT<small>프레지던트</small></span>
+    <span id="roundNo"></span>
+    <span class="spacer"></span>
+    <span id="revBadge">REVOLUTION</span>
+    <button class="iconBtn" id="helpBtn" aria-label="규칙">?</button>
+  </header>
+  <main id="board">
+    <div class="seat" id="seat1"></div>
+    <div class="seat" id="seat2"></div>
+    <div class="seat" id="seat3"></div>
+    <section id="table">
+      <div class="stack a"></div><div class="stack b"></div>
+      <div id="turnInfo">…</div>
+      <div id="field"></div>
+      <div id="fieldOwner"></div>
+      <div id="log"></div>
+    </section>
+  </main>
+  <section id="mine">
+    <div id="meBar">
+      <div class="chip" id="myChip"><i></i></div>
+      <span id="myName"></span>
+      <span class="rankTag" id="myTitle"></span>
+      <span class="bubble" id="myBubble"></span>
+      <span id="hint"></span>
+    </div>
+    <div id="hand"></div>
+    <div id="controls">
+      <button class="btn" id="playBtn" disabled>내기</button>
+      <button class="btn alt" id="passBtn" disabled>패스</button>
+    </div>
+  </section>
+</div>
+
+<!-- 로비 (혼자 하기 / 방 만들기) -->
+<div class="overlay show" id="lobbyOv">
+  <div class="panel">
+    <h2>PRESIDENT</h2>
+    <p class="tagline">가장 먼저 패를 비운 자가 테이블을 지배한다</p>
+    <label>내 이름<input type="text" id="hostName" maxlength="10" value="플레이어"></label>
+    <div class="formRow">
+      <label>판 수
+        <select id="optRounds">
+          <option value="1">1판</option>
+          <option value="3" selected>3판 승부</option>
+          <option value="5">5판 승부</option>
+          <option value="0">무제한</option>
+        </select>
+      </label>
+      <label>AI 난이도
+        <select id="optDiff">
+          <option value="casual">캐주얼</option>
+          <option value="serious" selected>시리어스</option>
+          <option value="cutthroat">컷스로트</option>
+        </select>
+      </label>
+    </div>
+    <p class="diffDesc" id="diffDesc"></p>
+    <div id="seatCfg"></div>
+    <p class="note" id="fileWarn" hidden>⚠️ 지금은 파일을 직접 연 상태라 친구가 초대 링크로 들어올 수 없어요. 홈페이지(https)에 올린 주소로 열어 주세요.</p>
+    <button class="btn" id="startBtn">게임 시작</button>
+    <details>
+      <summary>규칙 요약</summary>
+      <ul>
+        <li>손패를 가장 먼저 다 내면 <b>프레지던트</b>!</li>
+        <li>같은 숫자 1~4장을 묶어서, 바닥과 <b>같은 장수</b>로 <b>더 강한</b> 카드만 낼 수 있어요.</li>
+        <li>강도: 3 &lt; 4 &lt; … &lt; K &lt; A &lt; 2 &lt; 조커</li>
+        <li><b>8기리</b>: 8을 내면 바로 판 정리 후 다시 선.</li>
+        <li><b>혁명</b>: 4장 묶음을 내면 강약이 뒤집혀요.</li>
+        <li><b>♠3 반격</b>: 조커 한 장 위에 ♠3을 내면 이기고 판이 정리돼요.</li>
+        <li><b>탄핵</b>: 프레지던트가 1등을 놓치면 그 즉시 거지로 떨어져요.</li>
+      </ul>
+    </details>
+  </div>
+</div>
+
+<!-- 참가자(친구) 화면 -->
+<div class="overlay" id="joinOv">
+  <div class="panel">
+    <h2>INVITATION</h2>
+    <p class="tagline">프레지던트 테이블에 초대받았어요</p>
+    <div id="joinStep1">
+      <label>내 이름<input type="text" id="joinName" maxlength="10" placeholder="이름을 적어 주세요"></label>
+      <button class="btn" id="makeAnswerBtn">참가 코드 만들기</button>
+    </div>
+    <div id="joinStep2" hidden>
+      <p style="margin:.4em 0">아래 <b>참가 코드</b>를 방장에게 보내 주세요 (카톡 등).<br>방장이 붙여넣으면 자동으로 연결돼요.</p>
+      <textarea id="answerOut" readonly></textarea>
+      <button class="btn" id="shareAnswerBtn">코드 보내기 / 복사</button>
+    </div>
+    <p class="status" id="joinStatus"></p>
+  </div>
+</div>
+
+<!-- 라운드/매치 결과 -->
+<div class="overlay" id="resultOv">
+  <div class="panel">
+    <h2 id="resultTitle">RESULT</h2>
+    <div id="champBox"></div>
+    <div id="resultList"></div>
+    <h3>TOTAL</h3>
+    <table class="score" id="scoreTable"></table>
+    <button class="btn" id="nextBtn">다음 판</button>
+    <button class="btn alt small" id="toLobbyBtn2">로비로</button>
+  </div>
+</div>
+
+<!-- 규칙 -->
+<div class="overlay" id="helpOv">
+  <div class="panel">
+    <h2>RULES</h2>
+    <ul>
+      <li>4명이 53장(52장 + 조커)을 나눠 가집니다.</li>
+      <li>카드 강도: 3 &lt; 4 &lt; … &lt; K &lt; A &lt; 2 &lt; 조커</li>
+      <li>같은 숫자 1~4장을 한 묶음으로 냅니다. 바닥에 카드가 있으면 <b>같은 장수</b>이면서 <b>더 강한</b> 묶음만 낼 수 있어요.</li>
+      <li>조커는 혼자 내면 최강, 다른 숫자와 함께 내면 그 숫자 대신(와일드) 쓸 수 있어요.</li>
+      <li><b>♠3 반격</b>: 조커 한 장이 바닥에 있을 때 ♠3 한 장으로 이기고 판을 정리합니다.</li>
+      <li>모두 패스하면 마지막에 낸 사람이 새로 시작합니다.</li>
+      <li><b>8기리</b>: 8이 들어간 묶음을 내면 즉시 판 정리, 낸 사람이 다시 시작.</li>
+      <li><b>혁명</b>: 4장 묶음(조커 포함 가능)을 내면 강약이 뒤집혀요. 다시 4장이 나오면 원래대로.</li>
+      <li>먼저 다 낸 순서대로 <b>프레지던트 · 부통령 · 평민 · 거지</b> (3·2·1·0점).</li>
+      <li><b>탄핵</b>: 직전 판 프레지던트가 아닌 사람이 1등으로 나가면, 프레지던트는 그 즉시 거지가 됩니다.</li>
+      <li>카드 교환: 거지 → 프레지던트에게 가장 강한 카드 2장, 프레지던트는 아무 카드 2장을 돌려줌. 평민 ↔ 부통령은 1장.</li>
+      <li>첫 판은 ♦3을 가진 사람이, 이후는 거지가 먼저 시작합니다.</li>
+      <li>정해진 판 수가 끝나면 점수 합계로 최종 순위를 정해요.</li>
+    </ul>
+    <p class="note">PC 단축키: Enter = 내기, P = 패스</p>
+    <button class="btn alt" id="toLobbyBtn">로비로 돌아가기</button>
+    <button class="btn" id="closeHelpBtn">계속하기</button>
+  </div>
+</div>
+
+<div id="flash"></div>
+<div id="cutin"></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+/* =====================================================================
+   1. 설정
+   ===================================================================== */
+const RULES = {
+  USE_JOKER: true,          // 조커 1장 사용
+  JOKER_AS_WILD: true,      // 조커를 다른 숫자와 묶어 와일드로 사용 가능
+  JOKER_ALWAYS_TOP: true,   // 혁명 중에도 조커는 최강
+  MAX_SET: 4,               // 한 번에 낼 수 있는 최대 장수
+  EIGHT_CUT: true,          // 8기리
+  REVOLUTION: true,         // 혁명
+  REVOLUTION_COUNT: 4,      // 혁명이 일어나는 장수
+  SPADE3_RETURN: true,      // ♠3 반격 (조커 단독 위에 ♠3 단독 → 승리 + 판 정리)
+  IMPEACHMENT: true,        // 탄핵 (직전 프레지던트가 1등을 놓치면 즉시 거지)
+  EXCHANGE: true,           // 다음 판 카드 교환
+  EXCHANGE_COUNTS: [2, 1],  // [프레지던트↔거지, 부통령↔평민]
+  FIRST_ROUND_STARTER: { suit: '♦', rank: 3 },
+  SCORE: [3, 2, 1, 0],      // 순위별 점수
+  DIFFICULTY: 'serious',    // casual | serious | cutthroat (로비에서 변경)
+
+  AI_DELAY: 850, AI_DELAY_JITTER: 500,  // AI 생각 시간(ms)
+  CLEAR_DELAY: 1000,        // 판 정리 연출(ms)
+  CUTIN_DELAY: 1300,        // 컷인이 나올 때 다음 차례까지 대기(ms)
+  AI_SAVE_STRONG: 5,        // 손패가 이보다 많으면 2·조커를 아낌
+  AI_DANGER_HAND: 2,        // 상대 손패가 이 이하이면 아끼지 않고 막음
+};
+const DIFF_DESC = {
+  casual: '느긋한 상대. 가끔 실수하고 강한 카드도 막 써요.',
+  serious: '정석 플레이. 약한 카드부터 내고 2·조커는 끝까지 아껴요.',
+  cutthroat: '무자비. 나온 카드를 기억하고 마무리 수까지 읽어요.',
+};
+
+/* P2P 연결 설정. 회사/학교 망에서 연결이 안 되면 TURN 서버를 추가하세요.
+   예) { urls:'turn:내서버:3478', username:'id', credential:'pw' } */
+const NET = {
+  ICE_SERVERS: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun.cloudflare.com:3478' }],
+  ICE_WAIT_MS: 4000,
+};
+
+/* 자리별 기본 캐릭터(AI)와 칩 색, 컷인 대사. 0번 = 방장 자리 */
+const SEATS = [
+  { name: '플레이어', color: 'var(--chip-amber)', lines: null },
+  { name: '빅터', color: 'var(--chip-black)', lines: {
+    eight: '여기까지.', revolution: '판을 뒤집지.', counter: '원래대로 돌려놓지.', spade3: '작은 카드도 쓸모가 있지.',
+    joker: '이걸 기다렸나?', first: '먼저 실례하지.', impeach: '…탄핵이라. 오랜만이군.', win: '테이블은 늘 내 편이었어.' } },
+  { name: '로즈', color: 'var(--chip-red)', lines: {
+    eight: '컷.', revolution: '세상은 뒤집혀야 재밌죠.', counter: '한 번 더 뒤집어 볼까요?', spade3: '조커? 귀여워라.',
+    joker: '마지막 한 장은 늘 내 거예요.', first: '먼저 일어날게요, 여러분.', impeach: '이럴 리가 없는데…', win: '오늘 밤의 주인공은 나예요.' } },
+  { name: '레오', color: 'var(--chip-green)', lines: {
+    eight: '끊어!', revolution: '혁명이다!', counter: '역혁명!', spade3: '스페이드 3, 대기 중이었지!',
+    joker: '조커 간다!', first: '끝! 내가 1등!', impeach: '탄핵이라니…!', win: '대박! 내가 프레지던트야!' } },
+];
+/* 사람(나·친구)이 컷인할 때 쓰는 기본 대사 */
+const HUMAN_LINES = {
+  eight: '여기서 끊는다.', revolution: '혁명이다.', counter: '다시 뒤집는다.', spade3: '♠3, 반격.',
+  joker: '조커.', first: '먼저 갑니다.', impeach: '탄핵당했다…', win: '오늘의 프레지던트.' };
+const TITLES = ['프레지던트', '부통령', '평민', '거지'];
+const TITLE_COLORS = ['#f0c871', '#d6d6d6', '#c58a5a', '#8a8a8a'];  // 금·은·동·회색
+
+/* =====================================================================
+   2. 카드 / 조합 판정
+   rank: 3~10 그대로, J=11, Q=12, K=13, A=14, 2=15, 조커=16
+   ===================================================================== */
+const SUITS = ['♠', '♥', '♦', '♣'];
+const JOKER = 16;
+const RANK_LABEL = { 3:'3',4:'4',5:'5',6:'6',7:'7',8:'8',9:'9',10:'10',11:'J',12:'Q',13:'K',14:'A',15:'2',16:'JK' };
+
+let ROLE = 'solo';     // solo(혼자) | host(방장) | client(참가자)
+let MY = 0;            // 이 화면의 자리 번호
+let V = null;          // 지금 그리고 있는 view
+const SEL = new Set(); // 선택한 카드 id
+
+function makeDeck() {  // id는 항상 같은 순서(카드 추적용)
+  const deck = []; let id = 0;
+  for (const suit of SUITS) for (let r = 3; r <= 15; r++) deck.push({ id: id++, suit, rank: r, joker: false });
+  if (RULES.USE_JOKER) deck.push({ id: id++, suit: '★', rank: JOKER, joker: true });
+  return deck;
+}
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+/* 혁명 상태: 방장은 엔진 값, 참가자는 받은 view 값 */
+const isRev = () => ROLE === 'client' ? !!(V && V.revolution) : G.revolution;
+/* 현재 강도. 클수록 강함. 혁명 중엔 3이 최강, 2가 최약 */
+function strength(rank) {
+  if (rank === JOKER) return (RULES.JOKER_ALWAYS_TOP || !isRev()) ? 100 : 0;
+  return isRev() ? (18 - rank) : rank;
+}
+const isStrongRank = r => r === JOKER || strength(r) >= 15;
+const isSpade3 = c => c && !c.joker && c.suit === '♠' && c.rank === 3;
+const isRed = c => c.suit === '♥' || c.suit === '♦';
+const cardText = c => c.joker ? '🃏' : c.suit + RANK_LABEL[c.rank];
+const cardsText = cs => cs.map(cardText).join(' ');
+function sortHand(h) { h.sort((a, b) => strength(a.rank) - strength(b.rank) || SUITS.indexOf(a.suit) - SUITS.indexOf(b.suit)); }
+
+/* 낼 수 있는 묶음이면 {cards,count,rank,hasJoker}, 아니면 null */
+function analyze(cards) {
+  if (!cards || cards.length < 1 || cards.length > RULES.MAX_SET) return null;
+  const jk = cards.filter(c => c.joker), nat = cards.filter(c => !c.joker);
+  if (jk.length > 1) return null;
+  if (!nat.length) return { cards, count: cards.length, rank: JOKER, hasJoker: true };
+  if (jk.length && !RULES.JOKER_AS_WILD) return null;
+  const r = nat[0].rank;
+  if (!nat.every(c => c.rank === r)) return null;
+  return { cards, count: cards.length, rank: r, hasJoker: jk.length > 0 };
+}
+const isSingleJoker = f => f && f.count === 1 && f.rank === JOKER;
+/* combo가 바닥 field를 이기는가 */
+function beats(combo, field) {
+  if (!combo) return false;
+  if (!field) return true;
+  if (RULES.SPADE3_RETURN && isSingleJoker(field) && combo.count === 1 && isSpade3(combo.cards[0])) return true;
+  return combo.count === field.count && strength(combo.rank) > strength(field.rank);
+}
+
+/* =====================================================================
+   3. 게임 엔진 (방장/혼자일 때만 동작)
+   ===================================================================== */
+const G = {
+  players: [], turn: 0, field: null, lastPlayer: -1, passCount: 0, revolution: false,
+  finishOrder: [], lastOrder: null, prevPresident: -1, impeached: -1,
+  round: 0, matchRounds: 3, phase: 'lobby', busy: false, log: [], gen: 0,
+  pendingGives: [], seen: new Set(), showResult: false, roundResult: null,
+};
+const P = i => G.players[i];
+const isAI = p => p.kind === 'ai';
+const activeCount = () => G.players.filter(p => !p.out).length;
+function nextActive(i) { for (let k = 1; k <= 4; k++) { const j = (i + k) % 4; if (!G.players[j].out) return j; } return i; }
+function later(fn, ms) { const gen = G.gen; setTimeout(() => { if (gen === G.gen) fn(); }, ms); }
+function addLog(t) { G.log.push(t); if (G.log.length > 40) G.log.shift(); }
+
+/* cfg: [{kind:'local'|'remote'|'ai', name}] ×4 */
+function newPlayers(cfg) {
+  G.players = cfg.map((c, i) => ({ id: i, name: c.name, kind: c.kind, color: SEATS[i].color,
+    hand: [], out: false, title: null, score: 0, stats: [0, 0, 0, 0], bubble: '' }));
+}
+
+function startRound() {
+  G.gen++; G.round++;
+  Object.assign(G, { field: null, lastPlayer: -1, passCount: 0, revolution: false, finishOrder: [], busy: false,
+    log: [], pendingGives: [], impeached: -1, showResult: false, roundResult: null });
+  G.seen = new Set();
+  G.prevPresident = (RULES.IMPEACHMENT && G.lastOrder) ? G.lastOrder[0] : -1;
+  G.players.forEach(p => { p.hand = []; p.out = false; p.bubble = ''; });
+  const deck = shuffle(makeDeck());
+  const start = Math.floor(Math.random() * 4);   // 53장 → 1명이 1장 더
+  deck.forEach((c, i) => G.players[(start + i) % 4].hand.push(c));
+  G.players.forEach(p => sortHand(p.hand));
+  addLog(`제 ${G.round}판 시작!`);
+  const finalRound = G.matchRounds > 1 && G.round === G.matchRounds;
+  fx({ k: 'flash', text: finalRound ? 'FINAL ROUND' : `ROUND ${G.round}` });
+  if (RULES.EXCHANGE && G.lastOrder) beginExchange(); else beginPlay();
+}
+
+/* ---- 카드 교환 ---- */
+function moveCards(from, to, cards) {
+  const ids = new Set(cards.map(c => c.id));
+  from.hand = from.hand.filter(c => !ids.has(c.id));
+  cards.forEach(c => { c.isNew = !isAI(to); });
+  to.hand.push(...cards);
+}
+const strongestN = (h, n) => [...h].sort((a, b) => strength(b.rank) - strength(a.rank)).slice(0, n);
+const weakestN   = (h, n) => [...h].sort((a, b) => strength(a.rank) - strength(b.rank)).slice(0, n);
+
+function beginExchange() {
+  G.phase = 'exchange';
+  const o = G.lastOrder, [n1, n2] = RULES.EXCHANGE_COUNTS;
+  const pairs = [{ rich: o[0], poor: o[3], n: n1 }, { rich: o[1], poor: o[2], n: n2 }].filter(x => x.n > 0);
+  const msgs = {}; const say = (s, t) => (msgs[s] = msgs[s] || []).push(t);
+  // ① 아랫자리 → 가장 강한 카드 자동 헌납
+  for (const pr of pairs) {
+    const rich = P(pr.rich), poor = P(pr.poor), give = strongestN(poor.hand, pr.n);
+    moveCards(poor, rich, give);
+    addLog(`${poor.name} → ${rich.name}: ${pr.n}장 헌납`);
+    say(poor.id, `${rich.name}에게 가장 강한 카드를 바쳤어요: ${cardsText(give)}`);
+    say(rich.id, `${poor.name}에게서 받은 카드: ${cardsText(give)}`);
+  }
+  // ② 윗자리 → 돌려줄 카드 (AI는 가장 약한 카드, 사람은 직접 고름)
+  for (const pr of pairs) {
+    const rich = P(pr.rich), poor = P(pr.poor);
+    if (!isAI(rich)) { G.pendingGives.push(pr); continue; }
+    const give = weakestN(rich.hand, pr.n);
+    moveCards(rich, poor, give);
+    addLog(`${rich.name} → ${poor.name}: ${pr.n}장 반환`);
+    say(poor.id, `${rich.name}이(가) 돌려준 카드: ${cardsText(give)}`);
+  }
+  G.players.forEach(p => sortHand(p.hand));
+  for (const s in msgs) fxTo(+s, { k: 'toast', html: msgs[s].join('<br>'), ms: 4500 });
+  sync();
+  if (!G.pendingGives.length) later(beginPlay, 1600);
+}
+function completeGive(pr, cards) {
+  const rich = P(pr.rich), poor = P(pr.poor);
+  moveCards(rich, poor, cards); sortHand(poor.hand); sortHand(rich.hand);
+  addLog(`${rich.name} → ${poor.name}: ${pr.n}장 반환`);
+  fxTo(rich.id, { k: 'toast', html: `${poor.name}에게 건넸어요: ${cardsText(cards)}` });
+  fxTo(poor.id, { k: 'toast', html: `${rich.name}이(가) 돌려준 카드: ${cardsText(cards)}`, ms: 4000 });
+  G.pendingGives = G.pendingGives.filter(x => x !== pr);
+  if (!G.pendingGives.length) beginPlay(); else sync();
+}
+
+function beginPlay() {
+  G.phase = 'play';
+  let first;
+  if (G.lastOrder) first = G.lastOrder[3];   // 거지가 선
+  else { const s = RULES.FIRST_ROUND_STARTER; first = G.players.findIndex(p => p.hand.some(c => c.suit === s.suit && c.rank === s.rank)); }
+  if (first < 0) first = 0;
+  addLog(`${P(first).name}부터 시작합니다.`);
+  setTurn(first, 500);
+}
+
+/* wait(ms) 후 pi의 차례. AI면 생각한 뒤 자동 행동 */
+function setTurn(pi, wait = 0) {
+  G.busy = true; sync();
+  later(() => {
+    G.turn = pi; G.busy = false;
+    const p = P(pi);
+    if (isAI(p)) { p.bubble = '생각 중…'; sync(); later(() => aiTurn(pi), aiDelay()); }
+    else sync();
+  }, wait);
+}
+function aiDelay() {
+  const humansPlaying = G.players.some(p => !isAI(p) && !p.out);
+  return (RULES.AI_DELAY + Math.random() * RULES.AI_DELAY_JITTER) * (humansPlaying ? 1 : 0.5);
+}
+
+/* 컷인: 레터박스 + 스포트라이트 + 대사 */
+function cutin(pi, key, title) {
+  const p = P(pi);
+  const lines = (isAI(p) && SEATS[pi].lines) || HUMAN_LINES;
+  fx({ k: 'cutin', initial: initialOf(p.name), color: p.color, name: p.name, title, line: lines[key] || '',
+       rev: key === 'revolution' || key === 'counter' || key === 'impeach' });
+}
+const initialOf = name => [...String(name || '?')][0];
+
+/* ---- 내기 ---- */
+function playCards(pi, cards) {
+  const p = P(pi), prev = G.field, combo = analyze(cards);
+  const ids = new Set(cards.map(c => c.id));
+  p.hand = p.hand.filter(c => !ids.has(c.id));
+  if (!isAI(p)) p.hand.forEach(c => c.isNew = false);
+  cards.forEach(c => { c.isNew = false; G.seen.add(c.id); });
+  G.field = { ...combo, player: pi };
+  G.lastPlayer = pi; G.passCount = 0;
+  p.bubble = cardsText(cards);
+  addLog(`${p.name}: ${cardsText(cards)}`);
+  let cuts = 0;
+
+  const spade3 = RULES.SPADE3_RETURN && isSingleJoker(prev) && combo.count === 1 && isSpade3(cards[0]);
+  if (spade3) { cutin(pi, 'spade3', '♠3 COUNTER'); cuts++; addLog('♠ 스페이드 3 반격! 조커를 꺾었습니다.'); }
+  else if (isSingleJoker(combo)) { cutin(pi, 'joker', 'JOKER'); cuts++; }
+
+  if (RULES.REVOLUTION && combo.count >= RULES.REVOLUTION_COUNT) {
+    G.revolution = !G.revolution;
+    G.players.forEach(q => sortHand(q.hand));
+    cutin(pi, G.revolution ? 'revolution' : 'counter', G.revolution ? 'REVOLUTION' : 'RESTORATION'); cuts++;
+    addLog(G.revolution ? '⚡ 혁명! 강약이 뒤집힙니다.' : '⚡ 역혁명! 원래대로 돌아옵니다.');
+  }
+
+  if (!p.hand.length) {
+    p.out = true; G.finishOrder.push(pi);
+    const place = G.finishOrder.length;
+    p.bubble = `${place}위`;
+    addLog(`🎉 ${p.name} 손패 소진! (${place}위)`);
+    if (place === 1) { cutin(pi, 'first', 'FIRST OUT'); cuts++; }
+    // 탄핵: 직전 프레지던트가 아닌 사람이 1등 → 프레지던트는 즉시 거지
+    if (place === 1 && G.prevPresident >= 0 && G.prevPresident !== pi && !P(G.prevPresident).out) {
+      const t = P(G.prevPresident);
+      t.out = true; t.hand = []; G.impeached = t.id; t.bubble = '탄핵';
+      addLog(`⚖️ ${t.name} 탄핵! 거지로 추락합니다.`);
+      cutin(t.id, 'impeach', 'IMPEACHED'); cuts++;
+    }
+  }
+  if (checkRoundEnd()) return;
+
+  const eight = RULES.EIGHT_CUT && combo.rank === 8;
+  if (eight) { cutin(pi, 'eight', '8 CUT'); cuts++; addLog('✂️ 8기리! 판이 정리됩니다.'); }
+  if (eight || spade3) { clearTrick(p.out ? nextActive(pi) : pi, cuts); return; }
+  setTurn(nextActive(pi), cuts ? RULES.CUTIN_DELAY * Math.min(cuts, 2) : 300);
+}
+
+/* ---- 패스 ---- */
+function passTurn(pi) {
+  const p = P(pi);
+  p.bubble = '패스'; G.passCount++;
+  addLog(`${p.name}: 패스`);
+  const lastActive = G.lastPlayer >= 0 && !P(G.lastPlayer).out;
+  const need = activeCount() - (lastActive ? 1 : 0);   // 낸 사람 빼고 전원 패스면 정리
+  if (G.passCount >= need) clearTrick(lastActive ? G.lastPlayer : nextActive(G.lastPlayer));
+  else setTurn(nextActive(pi), 250);
+}
+function clearTrick(leader, cuts = 0) {
+  G.busy = true; sync();
+  later(() => {
+    G.field = null; G.passCount = 0;
+    G.players.forEach(q => { if (!q.out) q.bubble = ''; });
+    addLog(`바닥 정리 — ${P(leader).name}의 선`);
+    setTurn(leader, 0);
+  }, RULES.CLEAR_DELAY + (cuts > 1 ? RULES.CUTIN_DELAY : 0));
+}
+
+function checkRoundEnd() {
+  const remain = G.players.filter(p => !p.out);
+  if (remain.length > 1) return false;
+  if (remain.length === 1) { remain[0].out = true; G.finishOrder.push(remain[0].id); }
+  if (G.impeached >= 0) G.finishOrder.push(G.impeached);    // 탄핵된 프레지던트는 꼴찌
+  G.finishOrder.forEach((id, i) => { if (P(id).bubble !== '탄핵') P(id).bubble = `${i + 1}위`; });
+  endRound();
+  return true;
+}
+function endRound() {
+  G.phase = 'roundEnd'; G.busy = true;
+  G.finishOrder.forEach((pi, place) => {
+    const p = P(pi); p.title = place; p.score += RULES.SCORE[place]; p.stats[place]++;
+  });
+  G.lastOrder = [...G.finishOrder];
+  const final = G.matchRounds > 0 && G.round >= G.matchRounds;
+  G.roundResult = { order: [...G.finishOrder], impeached: G.impeached, final, champion: final ? champion() : -1 };
+  sync();
+  later(() => {
+    G.showResult = true;
+    if (final) { G.phase = 'matchEnd'; cutin(G.roundResult.champion, 'win', 'WINNER'); }
+    sync();
+  }, 1500);
+}
+/* 최다 점수 → 프레지던트 횟수 → 마지막 판 순위 */
+function champion() {
+  return [...G.players].sort((a, b) => b.score - a.score || b.stats[0] - a.stats[0] ||
+    G.finishOrder.indexOf(a.id) - G.finishOrder.indexOf(b.id))[0].id;
+}
+function nextRoundOrMatch() {
+  if (G.phase === 'matchEnd') {
+    G.players.forEach(p => { p.score = 0; p.stats = [0, 0, 0, 0]; p.title = null; });
+    G.round = 0; G.lastOrder = null;
+  }
+  startRound();
+}
+
+/* 사람(나/친구)의 행동 처리 — 모든 검증은 여기서 */
+function handleAction(seat, m) {
+  const p = P(seat);
+  if (!p || isAI(p)) return;
+  if (m.a === 'give') {
+    const pr = G.pendingGives.find(x => x.rich === seat);
+    if (G.phase !== 'exchange' || !pr || !Array.isArray(m.ids)) return;
+    const cards = p.hand.filter(c => m.ids.includes(c.id));
+    if (cards.length !== pr.n || m.ids.length !== pr.n) return;
+    completeGive(pr, cards);
+    return;
+  }
+  if (G.phase !== 'play' || G.busy || G.turn !== seat || p.out) return;
+  if (m.a === 'pass') { if (G.field) passTurn(seat); return; }
+  if (m.a === 'play' && Array.isArray(m.ids)) {
+    const cards = p.hand.filter(c => m.ids.includes(c.id));
+    if (cards.length !== m.ids.length) return;
+    if (!beats(analyze(cards), G.field)) return;
+    playCards(seat, cards);
+  }
+}
+
+/* 자리별 화면 정보. 다른 사람의 손패는 장수만 보냄 */
+function makeView(seat) {
+  const pr = G.pendingGives.find(x => x.rich === seat);
+  return {
+    me: seat, phase: G.phase, round: G.round, matchRounds: G.matchRounds, revolution: G.revolution,
+    busy: G.busy, turn: G.turn,
+    field: G.field ? { cards: G.field.cards, count: G.field.count, rank: G.field.rank, player: G.field.player } : null,
+    players: G.players.map(p => ({ id: p.id, name: p.name, kind: p.kind, color: p.color, count: p.hand.length,
+      out: p.out, title: p.title, score: p.score, stats: p.stats, bubble: p.bubble })),
+    hand: P(seat).hand,
+    give: (G.phase === 'exchange' && pr) ? { poor: pr.poor, n: pr.n } : null,
+    waitingGive: G.phase === 'exchange' && G.pendingGives.length > 0,
+    log: G.log.slice(-2),
+    result: G.showResult ? G.roundResult : null,
+  };
+}
+/* 상태가 바뀔 때마다: 내 화면 갱신 + 친구들에게 각자 view 전송 */
+function sync() {
+  if (ROLE === 'client') return;
+  V = makeView(MY); draw();
+  for (const p of G.players) if (p.kind === 'remote') sendTo(p.id, { t: 'view', v: makeView(p.id) });
+}
+/* 연출: 모두에게 / 특정 자리에게 */
+function fx(obj) {
+  if (ROLE === 'client') return;
+  showFx(obj);
+  for (const p of G.players) if (p.kind === 'remote') sendTo(p.id, { t: 'fx', fx: obj });
+}
+function fxTo(seat, obj) {
+  const p = P(seat); if (!p || isAI(p)) return;
+  if (seat === MY) showFx(obj); else sendTo(seat, { t: 'fx', fx: obj });
+}
+
+/* =====================================================================
+   4. AI
+   casual   : 가끔 그냥 패스하거나 아무거나 냄, 강한 카드도 막 씀
+   serious  : 약한 카드부터, 2·조커는 후반까지 아낌
+   cutthroat: + 나온 카드 추적, "이 수로 판을 가져가고 나머지 한 번에 털기" 수읽기, ♠3을 조커 대비로 보관
+   ===================================================================== */
+function groupByRank(hand) {
+  const m = new Map();
+  hand.filter(c => !c.joker).forEach(c => { if (!m.has(c.rank)) m.set(c.rank, []); m.get(c.rank).push(c); });
+  return m;
+}
+function mk(cards, breaks) { const a = analyze(cards); return a ? { ...a, breaks } : null; }
+function followCandidates(hand, n) {
+  const out = [], joker = hand.find(c => c.joker);
+  for (const [, cs] of groupByRank(hand)) {
+    if (cs.length >= n) out.push(mk(cs.slice(0, n), cs.length > n));
+    else if (joker && RULES.JOKER_AS_WILD && cs.length + 1 === n) out.push(mk([...cs, joker], false));
+  }
+  if (joker && n === 1) out.push(mk([joker], false));
+  return out.filter(Boolean);
+}
+function leadCandidates(hand) {
+  const out = [];
+  for (const [, cs] of groupByRank(hand)) out.push(mk(cs.slice(0, RULES.MAX_SET), false));
+  const joker = hand.find(c => c.joker);
+  if (joker) out.push(mk([joker], false));
+  return out.filter(Boolean);
+}
+/* 바닥을 이길 수 있는 후보 (♠3 반격 포함) */
+function beatingCandidates(hand, field) {
+  if (!field) return leadCandidates(hand);
+  const c = followCandidates(hand, field.count).filter(x => beats(x, field));
+  const s3 = hand.find(isSpade3);
+  if (s3 && isSingleJoker(field) && RULES.SPADE3_RETURN && !c.some(x => x.cards[0] === s3)) c.push(mk([s3], false));
+  return c;
+}
+function revolutionGood(hand) {
+  const weak = hand.filter(c => !c.joker && strength(c.rank) <= 7).length;
+  const strong = hand.filter(c => c.joker || strength(c.rank) >= 12).length;
+  return weak > strong;
+}
+function unseenCards(pi) {
+  const own = new Set(P(pi).hand.map(c => c.id));
+  return makeDeck().filter(c => !G.seen.has(c.id) && !own.has(c.id));
+}
+/* 남은 카드로 이 수를 이길 수 있는 사람이 없는가 */
+function isUnbeatable(c, pi) {
+  const un = unseenCards(pi), unJoker = un.some(x => x.joker);
+  if (isSingleJoker(c)) return !RULES.SPADE3_RETURN || !un.some(isSpade3);
+  if (c.count === 1 && unJoker) return false;
+  const cnt = {};
+  un.forEach(x => { if (!x.joker) cnt[x.rank] = (cnt[x.rank] || 0) + 1; });
+  for (const r in cnt) if (strength(+r) > strength(c.rank) && cnt[r] + (unJoker && RULES.JOKER_AS_WILD ? 1 : 0) >= c.count) return false;
+  return true;
+}
+/* 컷스로트 수읽기 */
+function killerMove(pi, hand, cands) {
+  for (const c of cands) {
+    const ids = new Set(c.cards.map(x => x.id)), rest = hand.filter(x => !ids.has(x.id));
+    if (!rest.length) return c;
+    if (analyze(rest) && ((RULES.EIGHT_CUT && c.rank === 8) || isUnbeatable(c, pi))) return c;
+  }
+  return null;
+}
+function aiScore(c, hand, saving, diff) {
+  let s = strength(c.rank);
+  if (c.hasJoker && c.rank !== JOKER) s += 20;     // 조커 와일드 사용은 비선호
+  if (c.breaks) s += 4;                             // 묶음 쪼개기 비선호
+  if (saving && (isStrongRank(c.rank) || c.hasJoker)) s += 1000;
+  if (RULES.REVOLUTION && c.count >= RULES.REVOLUTION_COUNT) s += revolutionGood(hand) ? -50 : 30;
+  if (!G.field) s -= c.count * 0.5;                 // 선일 땐 여러 장 털기 선호
+  if (diff !== 'casual' && RULES.SPADE3_RETURN && c.count === 1 && isSpade3(c.cards[0]) && !G.field) {
+    const jokerOut = makeDeck().some(x => x.joker && G.seen.has(x.id));
+    if (!jokerOut && !hand.some(x => x.joker)) s += diff === 'cutthroat' ? 12 : 4; // 조커 대비로 남김
+  }
+  return s;
+}
+function aiChoose(pi) {
+  const diff = RULES.DIFFICULTY, hand = P(pi).hand, f = G.field;
+  const cands = beatingCandidates(hand, f);
+  if (!cands.length) return null;
+  const fin = cands.find(c => c.cards.length === hand.length);
+  if (fin) return fin;
+  if (diff === 'cutthroat') { const k = killerMove(pi, hand, cands); if (k) return k; }
+  if (diff === 'casual') {
+    if (f && Math.random() < 0.25) return null;
+    if (Math.random() < 0.35) return cands[Math.floor(Math.random() * cands.length)];
+  }
+  const dangerN = RULES.AI_DANGER_HAND + (diff === 'cutthroat' ? 1 : 0);
+  const danger = G.players.some(q => q.id !== pi && !q.out && q.hand.length <= dangerN);
+  const saving = diff !== 'casual' && hand.length > RULES.AI_SAVE_STRONG && !danger;
+  const scored = cands.map(c => ({ c, s: aiScore(c, hand, saving, diff) })).sort((a, b) => a.s - b.s);
+  if (f && scored[0].s >= 1000) return null;       // 아낄 카드뿐 → 패스
+  return scored[0].c;
+}
+function aiTurn(pi) {
+  if (G.phase !== 'play' || G.turn !== pi || !isAI(P(pi))) return;
+  const ch = aiChoose(pi);
+  if (ch) playCards(pi, ch.cards); else passTurn(pi);
+}
+
+/* =====================================================================
+   5. 화면 그리기 (V → DOM). 방장·참가자 공통
+   ===================================================================== */
+const $ = s => document.querySelector(s);
+function esc(s) { return String(s).replace(/[&<>"']/g, ch => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch])); }
+const chipHTML = (name, color, cls = '') => `<div class="chip ${cls}" style="--c:${color}"><i>${esc(initialOf(name))}</i></div>`;
+
+function cardEl(c, extra = '') {
+  const d = document.createElement('div');
+  const face = c.rank >= 11 && c.rank <= 13;
+  d.className = `card ${c.joker ? 'joker' : (isRed(c) ? 'red' : 'black')} ${face ? 'face' : ''} ${extra}`;
+  d.dataset.id = c.id;
+  if (c.joker) d.innerHTML = `<span class="corner"><b>JOKER</b></span><span class="pip">★</span>`;
+  else d.innerHTML = `<span class="corner"><b>${RANK_LABEL[c.rank]}</b><i>${c.suit}</i></span><span class="pip">${face ? RANK_LABEL[c.rank] : c.suit}</span>`;
+  return d;
+}
+function buildDecor() {
+  const stack = cols => cols.map((c, i) => `<div class="chip" style="--c:${c};top:${-i * 4}px"></div>`).join('');
+  document.querySelector('.stack.a').innerHTML = stack(['var(--chip-black)', 'var(--chip-black)', 'var(--chip-red)']);
+  document.querySelector('.stack.b').innerHTML = stack(['var(--chip-green)', 'var(--chip-amber)', 'var(--chip-amber)', 'var(--chip-black)']);
+}
+function buildSeats() {
+  for (let k = 1; k < 4; k++) $('#seat' + k).innerHTML =
+    `<div class="chip"><i></i></div><div class="name"></div><div class="sub"></div><span class="rankTag"></span>
+     <div class="backs"></div><div class="count"></div><span class="bubble"></span>`;
+}
+function setChip(el, name, color) { el.style.setProperty('--c', color); el.firstElementChild.textContent = initialOf(name); }
+function rankTag(el, p) {
+  el.textContent = p.title == null ? '' : TITLES[p.title];
+  el.style.setProperty('--rank-c', p.title == null ? '#ccc' : TITLE_COLORS[p.title]);
+}
+const canAct = () => V && V.phase === 'play' && V.turn === V.me && !V.busy && !V.players[V.me].out;
+const myHand = () => (V ? V.hand : []);
+const selCards = () => myHand().filter(c => SEL.has(c.id));
+
+function draw() {
+  if (!V) return;
+  const ids = new Set(myHand().map(c => c.id));
+  [...SEL].forEach(id => { if (!ids.has(id)) SEL.delete(id); });
+
+  document.body.classList.toggle('revolution', V.revolution);
+  $('#roundNo').textContent = V.round ? `ROUND ${V.round}${V.matchRounds ? ' / ' + V.matchRounds : ''}` : '';
+
+  // 다른 자리: 내 기준 왼쪽(+1) / 위(+2) / 오른쪽(+3)
+  for (let k = 1; k < 4; k++) {
+    const p = V.players[(V.me + k) % 4], el = $('#seat' + k);
+    el.classList.toggle('active', V.phase === 'play' && V.turn === p.id && !p.out && !V.busy);
+    el.classList.toggle('out', p.out);
+    setChip(el.querySelector('.chip'), p.name, p.color);
+    el.querySelector('.name').textContent = p.name;
+    el.querySelector('.sub').textContent = p.kind === 'remote' ? '친구' : p.kind === 'ai' ? 'AI' : '';
+    rankTag(el.querySelector('.rankTag'), p);
+    el.querySelector('.backs').innerHTML = '<span class="mini"></span>'.repeat(Math.min(p.count, 14));
+    el.querySelector('.count').innerHTML = p.out ? '완료' : `<b>${p.count}</b>장`;
+    el.querySelector('.bubble').textContent = p.bubble;
+  }
+  const me = V.players[V.me];
+  setChip($('#myChip'), me.name, me.color);
+  $('#myName').textContent = me.name;
+  rankTag($('#myTitle'), me);
+  $('#myBubble').textContent = me.bubble;
+
+  drawTable(); drawHand(); drawControls(); drawResult();
+}
+
+function drawTable() {
+  const ti = $('#turnInfo');
+  let text = '', mine = false;
+  if (V.phase === 'exchange') text = 'CARD EXCHANGE';
+  else if (V.phase === 'roundEnd' || V.phase === 'matchEnd') text = 'ROUND OVER';
+  else if (V.phase === 'play') {
+    const p = V.players[V.turn];
+    if (V.busy) text = '· · ·';
+    else if (p.id === V.me) { text = 'YOUR TURN'; mine = true; }
+    else text = `${p.name}의 차례`;
+  } else text = 'PRESIDENT';
+  ti.textContent = text; ti.classList.toggle('mine', mine);
+
+  const fd = $('#field'); fd.innerHTML = '';
+  if (V.field) {
+    V.field.cards.forEach((c, i) => {
+      const el = cardEl(c);
+      el.style.transform = `rotate(${((c.id * 37) % 13) - 6}deg)`;
+      el.style.animationDelay = `${i * 40}ms`;
+      fd.appendChild(el);
+    });
+    const o = V.players[V.field.player];
+    $('#fieldOwner').textContent = `${o.name} · ${V.field.count}장`;
+  } else {
+    fd.innerHTML = `<div class="emptyField"><b>OPEN</b>바닥이 비었어요 · 같은 숫자 1~4장을 자유롭게</div>`;
+    $('#fieldOwner').textContent = '';
+  }
+  $('#log').innerHTML = V.log.map(esc).join('<br>');
+}
+
+/* 내 차례에 낼 수 있는 카드만 밝게 */
+function computePlayable() {
+  if (!canAct() || !V.field) return null;
+  const hand = myHand(), set = new Set();
+  if (isSingleJoker(V.field)) { const s3 = hand.find(isSpade3); if (s3 && RULES.SPADE3_RETURN) set.add(s3.id); return set; }
+  followCandidates(hand, V.field.count).filter(c => beats(c, V.field)).forEach(c => {
+    if (c.rank !== JOKER) hand.filter(x => x.rank === c.rank).forEach(x => set.add(x.id));
+    if (c.hasJoker) set.add(hand.find(x => x.joker).id);
+  });
+  return set;
+}
+function drawHand() {
+  const el = $('#hand'); el.innerHTML = '';
+  if (V.players[V.me].out && V.phase === 'play') { el.innerHTML = `<div class="outMsg">패를 모두 비웠어요 · 나머지 승부를 지켜보세요</div>`; return; }
+  const playable = computePlayable();
+  myHand().forEach(c => {
+    const cls = [];
+    if (SEL.has(c.id)) cls.push('sel');
+    if (playable && !playable.has(c.id)) cls.push('dim');
+    if (c.isNew) cls.push('new');
+    el.appendChild(cardEl(c, cls.join(' ')));
+  });
+  layoutHand();
+}
+function layoutHand() {
+  const el = $('#hand'), cards = el.querySelectorAll('.card');
+  if (!cards.length) return;
+  const W = el.clientWidth - 8, cw = cards[0].offsetWidth, n = cards.length;
+  const step = n > 1 ? Math.min(cw + 4, (W - cw) / (n - 1)) : 0;
+  cards.forEach((c, i) => { c.style.marginLeft = i === 0 ? '0' : `${step - cw}px`; });
+}
+function drawControls() {
+  const play = $('#playBtn'), pass = $('#passBtn'), hint = $('#hint'), sel = selCards();
+  if (V.give) {
+    const poor = V.players[V.give.poor];
+    play.textContent = `건네기 ${sel.length}/${V.give.n}`;
+    play.disabled = sel.length !== V.give.n;
+    pass.style.visibility = 'hidden';
+    hint.textContent = `${poor.name}에게 돌려줄 카드 ${V.give.n}장을 고르세요`;
+    return;
+  }
+  pass.style.visibility = 'visible'; play.textContent = '내기';
+  if (!canAct()) {
+    play.disabled = pass.disabled = true;
+    hint.textContent = V.players[V.me].out ? '' :
+      V.phase === 'exchange' ? (V.waitingGive ? '다른 플레이어가 카드를 고르는 중…' : '') :
+      V.phase === 'play' ? '기다리는 중… (미리 골라둘 수 있어요)' : '';
+    return;
+  }
+  const combo = analyze(sel);
+  play.disabled = !beats(combo, V.field);
+  pass.disabled = !V.field;
+  if (sel.length && !combo) hint.textContent = '같은 숫자끼리만 묶을 수 있어요';
+  else if (sel.length && V.field && isSingleJoker(V.field) && !beats(combo, V.field)) hint.textContent = '조커는 ♠3 한 장으로만 이길 수 있어요';
+  else if (sel.length && V.field && combo.count !== V.field.count) hint.textContent = `${V.field.count}장을 맞춰 내야 해요`;
+  else if (sel.length && V.field && !beats(combo, V.field)) hint.textContent = '바닥보다 강해야 해요';
+  else if (V.field) hint.textContent = `바닥보다 강한 ${V.field.count}장 묶음을 고르세요`;
+  else hint.textContent = '선이에요! 원하는 묶음을 내세요';
+}
+function drawResult() {
+  const ov = $('#resultOv'), r = V.result;
+  if (!r) { ov.classList.remove('show'); return; }
+  const final = r.final;
+  $('#resultTitle').textContent = final ? 'FINAL RESULT' : `ROUND ${V.round}`;
+  const champ = final ? V.players[r.champion] : null;
+  $('#champBox').innerHTML = champ ? `<div class="champ">${chipHTML(champ.name, champ.color)}<b>${esc(champ.name)}</b>
+    <small>오늘 밤의 프레지던트</small></div>` : '';
+  $('#resultList').innerHTML = r.order.map((pi, place) => {
+    const p = V.players[pi];
+    const im = pi === r.impeached ? ' <small>(탄핵)</small>' : '';
+    return `<div class="resultRow ${pi === V.me ? 'me' : ''}">${chipHTML(p.name, p.color)}<span class="pl">${TITLES[place]}</span>
+      <span>${esc(p.name)}${im}</span><span class="pts">+${RULES.SCORE[place]}</span></div>`;
+  }).join('');
+  const sorted = [...V.players].sort((a, b) => b.score - a.score);
+  $('#scoreTable').innerHTML = `<tr><th>#</th><th>이름</th><th>점수</th><th>프레지던트</th><th>거지</th></tr>` +
+    sorted.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.name)}</td><td><b>${p.score}</b></td><td>${p.stats[0]}</td><td>${p.stats[3]}</td></tr>`).join('');
+  const next = $('#nextBtn');
+  if (ROLE === 'client') { next.textContent = '방장이 진행하길 기다리는 중…'; next.disabled = true; $('#toLobbyBtn2').hidden = true; }
+  else { next.textContent = final ? '새 매치 시작' : '다음 판'; next.disabled = false; $('#toLobbyBtn2').hidden = !final; }
+  ov.classList.add('show');
+}
+
+/* ---- 연출 ---- */
+const cutQueue = []; let cutBusy = false;
+function showFx(o) {
+  if (o.k === 'flash') flash(o.text);
+  else if (o.k === 'toast') toast(o.html, o.ms);
+  else if (o.k === 'cutin') { cutQueue.push(o); runCut(); }
+}
+function runCut() {
+  if (cutBusy || !cutQueue.length) return;
+  cutBusy = true;
+  const o = cutQueue.shift(), el = document.createElement('div');
+  el.className = 'cut' + (o.rev ? ' rev' : '');
+  el.innerHTML = `<div class="cutBody">${chipHTML(o.name, o.color)}<div><div class="cutTitle">${esc(o.title)}</div>
+    <div class="cutLine">“${esc(o.line)}”</div><div class="cutName">— ${esc(o.name)}</div></div></div>`;
+  $('#cutin').appendChild(el);
+  setTimeout(() => { el.remove(); cutBusy = false; runCut(); }, 1280);
+}
+function flash(text) {
+  const d = document.createElement('div'); d.className = 'flashText'; d.textContent = text;
+  $('#flash').appendChild(d); setTimeout(() => d.remove(), 1350);
+}
+let toastTimer = null;
+function toast(html, ms = 2600) {
+  const t = $('#toast'); t.innerHTML = html; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+/* =====================================================================
+   6. 입력 처리
+   ===================================================================== */
+$('#hand').addEventListener('click', e => {
+  const el = e.target.closest('.card');
+  if (!el || !V) return;
+  if (!(V.phase === 'play' || V.give)) return;
+  const id = Number(el.dataset.id);
+  if (SEL.has(id)) SEL.delete(id);
+  else { if (V.give && SEL.size >= V.give.n) return; SEL.add(id); }
+  drawHand(); drawControls();
+});
+function act(m) {
+  if (ROLE === 'client') { sendHost({ t: 'act', ...m }); V.busy = true; draw(); }  // 방장 응답까지 잠금
+  else handleAction(MY, m);
+}
+function onPlay() {
+  if (!V) return;
+  if (V.give) { const ids = [...SEL]; if (ids.length !== V.give.n) return; SEL.clear(); act({ a: 'give', ids }); return; }
+  if (!canAct()) return;
+  const cards = selCards();
+  if (!beats(analyze(cards), V.field)) return;
+  SEL.clear(); act({ a: 'play', ids: cards.map(c => c.id) });
+}
+function onPass() { if (!canAct() || !V.field) return; SEL.clear(); act({ a: 'pass' }); }
+$('#playBtn').addEventListener('click', onPlay);
+$('#passBtn').addEventListener('click', onPass);
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input,textarea,select')) return;
+  if (e.key === 'Enter' && !$('#playBtn').disabled) onPlay();
+  if ((e.key === 'p' || e.key === 'P') && !$('#passBtn').disabled) onPass();
+});
+$('#nextBtn').addEventListener('click', () => { if (ROLE !== 'client' && G.showResult) nextRoundOrMatch(); });
+$('#helpBtn').addEventListener('click', () => {
+  $('#toLobbyBtn').textContent = ROLE === 'client' ? '게임에서 나가기' : '로비로 돌아가기';
+  $('#helpOv').classList.add('show');
+});
+$('#closeHelpBtn').addEventListener('click', () => $('#helpOv').classList.remove('show'));
+$('#toLobbyBtn').addEventListener('click', () => {
+  $('#helpOv').classList.remove('show');
+  if (ROLE === 'client') { location.href = location.href.split('#')[0]; return; }
+  backToLobby();
+});
+$('#toLobbyBtn2').addEventListener('click', backToLobby);
+window.addEventListener('resize', layoutHand);
+
+/* =====================================================================
+   7. 네트워크 — WebRTC DataChannel. 시그널링은 링크/코드 복사로 직접
+   ===================================================================== */
+const PEERS = {};        // (방장) 자리 → { pc, dc, status, name, link, draft }
+let HOST_DC = null;      // (참가자) 방장과의 채널
+
+function sendTo(seat, obj) {
+  const pr = PEERS[seat];
+  if (pr && pr.dc && pr.dc.readyState === 'open') { try { pr.dc.send(JSON.stringify(obj)); } catch (e) {} }
+}
+function sendHost(obj) { if (HOST_DC && HOST_DC.readyState === 'open') HOST_DC.send(JSON.stringify(obj)); }
+
+/* 연결 정보(SDP) ↔ 짧은 코드 (압축 + base64url) */
+const b64u = buf => { const b = new Uint8Array(buf); let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const unb64u = str => { str = str.replace(/-/g, '+').replace(/_/g, '/'); while (str.length % 4) str += '=';
+  const s = atob(str), b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; };
+async function encodeDesc(d) {
+  const raw = new TextEncoder().encode(JSON.stringify({ type: d.type, sdp: d.sdp }));
+  if (window.CompressionStream) {
+    try { return 'z' + b64u(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer()); } catch (e) {}
+  }
+  return 'r' + b64u(raw);
+}
+/* 메시지째 붙여넣어도 코드만 뽑아냄 */
+function extractCode(t) { t = (t || '').trim(); const m = t.match(/[zr][A-Za-z0-9_-]{40,}/); return m ? m[0] : t; }
+async function decodeDesc(text) {
+  const code = extractCode(text), bytes = unb64u(code.slice(1));
+  let data = bytes;
+  if (code[0] === 'z') data = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+  return JSON.parse(new TextDecoder().decode(data));
+}
+function waitIce(pc) {
+  return new Promise(res => {
+    if (pc.iceGatheringState === 'complete') return res();
+    const t = setTimeout(res, NET.ICE_WAIT_MS);
+    pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); } });
+  });
+}
+async function shareOrCopy(text, isUrl) {
+  if (navigator.share) {
+    try { await navigator.share(isUrl ? { title: 'PRESIDENT 초대', url: text } : { text }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  copyText(text);
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); toast('복사했어요! 카톡 등에 붙여넣어 보내세요.'); return; } catch (e) {}
+  const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('복사했어요!'); } catch (e) { toast('직접 길게 눌러 복사해 주세요.'); }
+  ta.remove();
+}
+const cleanName = s => String(s || '').replace(/[<>]/g, '').trim().slice(0, 10);
+
+/* ---- 방장: 초대 만들기 ---- */
+function closePeer(seat) {
+  const pr = PEERS[seat]; if (!pr) return;
+  pr.closing = true;
+  try { pr.dc && pr.dc.close(); } catch (e) {}
+  try { pr.pc && pr.pc.close(); } catch (e) {}
+  delete PEERS[seat];
+}
+async function createInvite(seat) {
+  closePeer(seat);
+  const pc = new RTCPeerConnection({ iceServers: NET.ICE_SERVERS });
+  const dc = pc.createDataChannel('president', { ordered: true });
+  const pr = { pc, dc, status: 'making', name: '', link: '', draft: '' };
+  PEERS[seat] = pr; renderLobby();
+  dc.onopen = () => { if (pr.status !== 'connected') { pr.status = 'open'; renderLobby(); } };
+  dc.onmessage = e => onHostMsg(seat, pr, e.data);
+  dc.onclose = () => onPeerLost(seat, pr);
+  pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState)) onPeerLost(seat, pr); };
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    await waitIce(pc);
+    if (PEERS[seat] !== pr) return;
+    pr.link = location.href.split('#')[0] + '#join=' + await encodeDesc(pc.localDescription);
+    pr.status = 'waiting';
+  } catch (e) { pr.status = 'error'; }
+  renderLobby();
+}
+async function acceptAnswer(seat, text) {
+  const pr = PEERS[seat]; if (!pr) return;
+  try {
+    const desc = await decodeDesc(text);
+    if (desc.type !== 'answer') throw new Error('not answer');
+    pr.status = 'linking'; renderLobby();
+    await pr.pc.setRemoteDescription(desc);
+  } catch (e) { pr.status = 'badcode'; renderLobby(); }
+}
+function onHostMsg(seat, pr, data) {
+  let m; try { m = JSON.parse(data); } catch (e) { return; }
+  if (m.t === 'hello') {
+    pr.name = cleanName(m.name) || '친구'; pr.status = 'connected';
+    sendTo(seat, { t: 'welcome', host: P(0) ? P(0).name : '' });
+    renderLobby();
+  } else if (m.t === 'act' && G.phase !== 'lobby' && P(seat) && P(seat).kind === 'remote') {
+    handleAction(seat, m);
+    sendTo(seat, { t: 'view', v: makeView(seat) });   // 거절된 행동이어도 잠금이 풀리도록 항상 회신
+  }
+}
+/* 연결이 끊기면: 로비에선 대기 상태로, 게임 중이면 AI가 대신 플레이 */
+function onPeerLost(seat, pr) {
+  if (pr.lost || pr.closing) return;
+  pr.lost = true; pr.status = 'lost';
+  const p = P(seat);
+  if (G.phase !== 'lobby' && p && p.kind === 'remote') {
+    fx({ k: 'toast', html: `${esc(p.name)}의 연결이 끊겨 AI가 대신합니다.`, ms: 3500 });
+    p.kind = 'ai'; p.name = p.name + ' (AI)';
+    const pg = G.pendingGives.find(x => x.rich === seat);
+    if (pg) completeGive(pg, weakestN(p.hand, pg.n));
+    else if (G.phase === 'play' && G.turn === seat && !G.busy) { p.bubble = '생각 중…'; later(() => aiTurn(seat), aiDelay()); }
+    sync();
+  }
+  renderLobby();
+}
+
+/* ---- 참가자 ---- */
+async function makeAnswer() {
+  const name = cleanName($('#joinName').value);
+  if (!name) { setJoinStatus('이름을 적어 주세요.', 'err'); return; }
+  try { localStorage.setItem('presidentName', name); } catch (e) {}
+  $('#makeAnswerBtn').disabled = true;
+  setJoinStatus('참가 코드를 만드는 중…');
+  try {
+    const pc = new RTCPeerConnection({ iceServers: NET.ICE_SERVERS });
+    pc.ondatachannel = e => {
+      HOST_DC = e.channel;
+      const hello = () => { sendHost({ t: 'hello', name }); setJoinStatus('연결됐어요! 방장이 게임을 시작하길 기다리는 중…', 'ok'); };
+      HOST_DC.onopen = hello;
+      if (HOST_DC.readyState === 'open') hello();
+      HOST_DC.onmessage = ev => onClientMsg(ev.data);
+      HOST_DC.onclose = lostHost;
+    };
+    pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') lostHost(); };
+    await pc.setRemoteDescription(await decodeDesc(location.hash.slice(6)));
+    await pc.setLocalDescription(await pc.createAnswer());
+    await waitIce(pc);
+    $('#answerOut').value = await encodeDesc(pc.localDescription);
+    $('#joinStep1').hidden = true; $('#joinStep2').hidden = false;
+    setJoinStatus('코드를 보낸 뒤 이 화면을 켜 둔 채로 기다려 주세요.');
+  } catch (e) {
+    $('#makeAnswerBtn').disabled = false;
+    setJoinStatus('초대 링크가 올바르지 않거나 만료됐어요. 방장에게 새 링크를 받아 주세요.', 'err');
+  }
+}
+function onClientMsg(data) {
+  let m; try { m = JSON.parse(data); } catch (e) { return; }
+  if (m.t === 'welcome') setJoinStatus(`연결됐어요! ${m.host ? esc(m.host) + '님의 ' : ''}테이블에 앉았어요. 시작을 기다리는 중…`, 'ok');
+  else if (m.t === 'view') { V = m.v; MY = V.me; $('#joinOv').classList.remove('show'); draw(); }
+  else if (m.t === 'fx') showFx(m.fx);
+  else if (m.t === 'lobby') {
+    V = null; $('#resultOv').classList.remove('show');
+    $('#joinStep1').hidden = $('#joinStep2').hidden = true;
+    setJoinStatus('방장이 새 게임을 준비하고 있어요…', 'ok'); $('#joinOv').classList.add('show');
+  }
+}
+let hostLost = false;
+function lostHost() {
+  if (hostLost) return; hostLost = true;
+  $('#resultOv').classList.remove('show');
+  $('#joinStep1').hidden = $('#joinStep2').hidden = true;
+  setJoinStatus('방장과의 연결이 끊어졌어요. 새 초대 링크를 받아 다시 참가해 주세요.', 'err');
+  $('#joinOv').classList.add('show');
+}
+function setJoinStatus(t, cls = '') { const s = $('#joinStatus'); s.textContent = t; s.className = 'status ' + cls; }
+
+/* =====================================================================
+   8. 로비 / 시작
+   ===================================================================== */
+const LOBBY = { mode: [null, 'ai', 'ai', 'ai'] };   // 자리별 'ai' | 'friend'
+
+function renderLobby() {
+  if (ROLE === 'client') return;
+  $('#seatCfg').innerHTML = [1, 2, 3].map(s => {
+    const seat = SEATS[s], mode = LOBBY.mode[s], pr = PEERS[s];
+    let inner = '';
+    if (mode === 'friend') {
+      const st = !pr ? '' : {
+        making: '초대 링크를 만드는 중…', waiting: '① 링크를 친구에게 보내고 ② 친구가 보내 준 참가 코드를 붙여넣으세요.',
+        linking: '연결하는 중…', open: '연결하는 중…', connected: `✓ ${esc(pr.name)} 님이 들어왔어요`,
+        badcode: '참가 코드가 올바르지 않아요. 다시 확인해 주세요.', lost: '연결이 끊겼어요. 새 링크를 만들어 주세요.',
+        error: '링크를 만들지 못했어요. 이 브라우저가 P2P를 지원하지 않을 수 있어요.' }[pr.status];
+      const cls = pr && pr.status === 'connected' ? 'ok' : (pr && ['badcode', 'lost', 'error'].includes(pr.status) ? 'err' : '');
+      inner = `<div class="invite"><p class="status ${cls}">${st}</p>`;
+      if (pr && ['waiting', 'badcode', 'linking', 'open'].includes(pr.status)) inner += `
+        <div class="rowBtns"><button class="btn small" data-act="share" data-seat="${s}">① 초대 링크 보내기</button>
+          <button class="btn alt small" data-act="copy" data-seat="${s}">링크 복사</button></div>
+        <textarea data-seat="${s}" placeholder="② 친구가 보내 준 참가 코드를 여기에 붙여넣기">${esc(pr.draft || '')}</textarea>
+        <div class="rowBtns"><button class="btn alt small" data-act="paste" data-seat="${s}">붙여넣기</button>
+          <button class="btn small" data-act="connect" data-seat="${s}">연결</button></div>`;
+      if (pr && ['lost', 'error'].includes(pr.status)) inner += `<div class="rowBtns"><button class="btn small" data-act="renew" data-seat="${s}">새 초대 링크 만들기</button></div>`;
+      inner += `</div>`;
+    }
+    const label = mode === 'friend' && pr && pr.status === 'connected' ? esc(pr.name) : `${seat.name} (AI)`;
+    return `<div class="seatRow"><div class="seatHead">${chipHTML(mode === 'friend' && pr && pr.name ? pr.name : seat.name, seat.color)}
+      <b>자리 ${s} · ${label}</b>
+      <div class="seg"><button data-mode="ai" data-seat="${s}" class="${mode === 'ai' ? 'on' : ''}">AI</button>
+      <button data-mode="friend" data-seat="${s}" class="${mode === 'friend' ? 'on' : ''}">친구 초대</button></div></div>${inner}</div>`;
+  }).join('');
+  const anyFriend = LOBBY.mode.includes('friend');
+  const waiting = [1, 2, 3].filter(s => LOBBY.mode[s] === 'friend' && !(PEERS[s] && PEERS[s].status === 'connected')).length;
+  $('#startBtn').textContent = !anyFriend ? '게임 시작' : waiting ? `시작 (빈 ${waiting}자리는 AI)` : '친구들과 시작';
+  $('#fileWarn').hidden = !(anyFriend && location.protocol === 'file:');
+}
+$('#seatCfg').addEventListener('click', async e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const s = +b.dataset.seat;
+  if (b.dataset.mode) {
+    if (LOBBY.mode[s] === b.dataset.mode) return;
+    LOBBY.mode[s] = b.dataset.mode;
+    if (b.dataset.mode === 'friend') createInvite(s); else { closePeer(s); renderLobby(); }
+    return;
+  }
+  const pr = PEERS[s]; if (!pr) return;
+  if (b.dataset.act === 'share') shareOrCopy(pr.link, true);
+  if (b.dataset.act === 'copy') copyText(pr.link);
+  if (b.dataset.act === 'renew') createInvite(s);
+  if (b.dataset.act === 'paste') {
+    try { pr.draft = await navigator.clipboard.readText(); renderLobby(); }
+    catch (err) { toast('입력칸을 길게 눌러 직접 붙여넣어 주세요.'); }
+  }
+  if (b.dataset.act === 'connect') {
+    const ta = $(`#seatCfg textarea[data-seat="${s}"]`);
+    pr.draft = ta ? ta.value : pr.draft;
+    if (!extractCode(pr.draft)) return;
+    acceptAnswer(s, pr.draft);
+  }
+});
+$('#seatCfg').addEventListener('input', e => {
+  if (e.target.matches('textarea')) { const pr = PEERS[+e.target.dataset.seat]; if (pr) pr.draft = e.target.value; }
+});
+$('#optDiff').addEventListener('change', () => { $('#diffDesc').textContent = DIFF_DESC[$('#optDiff').value]; });
+
+$('#startBtn').addEventListener('click', () => {
+  const name = cleanName($('#hostName').value) || '플레이어';
+  try { localStorage.setItem('presidentName', name); } catch (e) {}
+  RULES.DIFFICULTY = $('#optDiff').value;
+  G.matchRounds = +$('#optRounds').value;
+  const cfg = [{ kind: 'local', name }];
+  for (let s = 1; s < 4; s++) {
+    const pr = PEERS[s];
+    if (LOBBY.mode[s] === 'friend' && pr && pr.status === 'connected') cfg.push({ kind: 'remote', name: pr.name });
+    else { cfg.push({ kind: 'ai', name: SEATS[s].name }); if (pr) { closePeer(s); LOBBY.mode[s] = 'ai'; } }
+  }
+  ROLE = cfg.some(c => c.kind === 'remote') ? 'host' : 'solo';
+  MY = 0; newPlayers(cfg);
+  G.round = 0; G.lastOrder = null;
+  $('#lobbyOv').classList.remove('show');
+  startRound();
+});
+function backToLobby() {
+  G.gen++; G.phase = 'lobby'; G.showResult = false;
+  cutQueue.length = 0;
+  for (const p of G.players) if (p.kind === 'remote') sendTo(p.id, { t: 'lobby' });
+  $('#resultOv').classList.remove('show');
+  renderLobby();
+  $('#lobbyOv').classList.add('show');
+}
+
+/* ---- 시작 ---- */
+(function init() {
+  buildSeats(); buildDecor();
+  $('#diffDesc').textContent = DIFF_DESC.serious;
+  let saved = ''; try { saved = localStorage.getItem('presidentName') || ''; } catch (e) {}
+  if (location.hash.startsWith('#join=')) {
+    ROLE = 'client';
+    $('#lobbyOv').classList.remove('show');
+    $('#joinOv').classList.add('show');
+    $('#joinName').value = saved;
+    if (!window.RTCPeerConnection) setJoinStatus('이 브라우저는 P2P 연결을 지원하지 않아요.', 'err');
+  } else {
+    if (saved) $('#hostName').value = saved;
+    renderLobby();
+  }
+  $('#makeAnswerBtn').addEventListener('click', makeAnswer);
+  $('#shareAnswerBtn').addEventListener('click', () => shareOrCopy('PRESIDENT 참가 코드:\n' + $('#answerOut').value, false));
+  // 첫 화면 배경용
+  newPlayers(SEATS.map((s, i) => ({ kind: i ? 'ai' : 'local', name: s.name })));
+  if (ROLE !== 'client') { V = makeView(0); draw(); }
+})();
+</script>
+</body>
+</html>
